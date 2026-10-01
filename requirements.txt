@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+openai>=1.30
+tiktoken>=0.7
+pypdf>=3.17

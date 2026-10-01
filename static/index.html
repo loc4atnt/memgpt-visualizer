@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MemGPT Visualizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="sticky-top">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <h1>MemGPT Visualizer</h1>
+          <div class="sub">Virtual context management · Packer et al., 2024</div>
+        </div>
+      </div>
+      <div class="modebox">
+        <span id="modeBadge" class="badge">…</span>
+        <span id="modelName" class="model"></span>
+        <span id="connDot" class="conn" title="Kết nối"></span>
+      </div>
+      <div class="controls">
+        <label class="switch" title="Tạm dừng trước mỗi function call / flush (phím S)">
+          <input type="checkbox" id="stepToggle"><span class="track"></span><span class="lbl">Step</span>
+        </label>
+        <button id="nextBtn" class="primary" disabled title="Thực thi bước tiếp theo (→ / Space)">Next ▶</button>
+        <label class="speed" title="Tốc độ phát hiệu ứng (phím 1–4)">
+          <span>Tốc độ</span>
+          <select id="paceSel">
+            <option value="1.7">Chậm</option>
+            <option value="1" selected>Vừa</option>
+            <option value="0.5">Nhanh</option>
+            <option value="0">Tức thì</option>
+          </select>
+        </label>
+        <span class="sep"></span>
+        <label class="switch live-only" title="Tắt các hàm bộ nhớ: chỉ còn FIFO + recursive summary">
+          <input type="checkbox" id="baselineToggle"><span class="track"></span><span class="lbl">Baseline</span>
+        </label>
+        <button id="burstBtn" class="live-only" title="Gửi 1 tin nhắn dài soạn sẵn (phím B)">Burst +1</button>
+        <button id="burst2Btn" class="live-only" title="Gửi 2 tin nhắn dài soạn sẵn">+2</button>
+        <button id="newSessionBtn" class="live-only" title="Xóa main context (FIFO), giữ core / recall / archival (phím N)">Phiên mới</button>
+        <button id="resetBtn" class="ghost live-only" title="Xóa toàn bộ bộ nhớ agent để diễn lại từ đầu">Reset</button>
+        <button id="restartReplayBtn" class="ghost replay-only">Phát lại từ đầu</button>
+        <span class="sep"></span>
+        <button id="promptBtn" class="ghost" title="Xem đúng prompt gửi cho LLM (phím P)">Raw prompt</button>
+        <button id="helpBtn" class="ghost icon" title="Phím tắt">?</button>
+      </div>
+    </header>
+    <div class="narrator" id="narrator" aria-live="polite">
+      <span class="n-icon" id="nIcon">●</span>
+      <div class="n-text" id="nText">Sẵn sàng. Gửi một tin nhắn hoặc bấm một câu gợi ý ở khung hội thoại.</div>
+      <span class="n-queue" id="nQueue"></span>
+      <button id="skipBtn" class="ghost" title="Phát nhanh các bước đang chờ (phím K)" disabled>Bỏ qua ⏭</button>
+    </div>
+  </div>
+
+  <main>
+    <section class="arch" id="arch">
+      <svg id="wires" aria-hidden="true"></svg>
+
+      <div class="col col-main">
+        <div class="col-title">Main context <small>= prompt (RAM)</small></div>
+        <div class="usage"><b id="usedTxt">0</b> / <span id="limitTxt">4000</span> token · <b id="pctTxt">0%</b></div>
+        <div class="bar" id="ctxBar">
+          <div class="fill" id="ctxFill"></div>
+          <div class="threshold t-warn" id="tWarn"><span>70% · cảnh báo</span></div>
+          <div class="threshold t-flush" id="tFlush"><span>100% · flush</span></div>
+        </div>
+        <div class="legend">
+          <span><i class="k-system"></i>System</span>
+          <span><i class="k-working"></i>Working</span>
+          <span><i class="k-summary"></i>Summary</span>
+          <span><i class="k-user"></i>User</span>
+          <span><i class="k-assistant"></i>Call</span>
+          <span><i class="k-tool"></i>Result</span>
+          <span><i class="k-alert"></i>Alert</span>
+        </div>
+      </div>
+
+      <div class="col col-center">
+        <div class="col-title">LLM OS <small>(MemGPT, Fig. 3)</small></div>
+        <div class="row top-row">
+          <div class="card llm" id="llmCard">
+            <div class="card-head"><span class="dot"></span>LLM processor <span id="llmStatus" class="pill">idle</span></div>
+            <div class="thought" id="llmThought"><span class="muted">Inner monologue sẽ hiện ở đây.</span></div>
+            <div class="meta" id="llmMeta"></div>
+          </div>
+          <div class="card fe" id="feCard">
+            <div class="card-head"><span class="dot"></span>Function executor <span id="feStatus" class="pill">—</span></div>
+            <div class="fn" id="feFn"><span class="muted">Chưa có function call.</span></div>
+            <div class="fe-args" id="feArgs"></div>
+            <div class="fe-hint" id="feHint"></div>
+          </div>
+        </div>
+
+        <div class="card working" id="workCard">
+          <div class="card-head"><span class="dot"></span>Working context <small>core memory · luôn nằm trong prompt · chỉ ghi qua function</small></div>
+          <div class="blocks">
+            <div class="block" id="blk-persona">
+              <div class="blk-head"><b>persona</b><span class="chars" id="chars-persona"></span></div>
+              <div class="meter"><span id="meter-persona"></span></div>
+              <div class="blk-body" id="body-persona"></div>
+            </div>
+            <div class="block" id="blk-human">
+              <div class="blk-head"><b>human</b><span class="chars" id="chars-human"></span></div>
+              <div class="meter"><span id="meter-human"></span></div>
+              <div class="blk-body" id="body-human"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card qm" id="qmCard">
+          <div class="card-head"><span class="dot"></span>Queue manager <small>ghi mọi tin vào recall · ≥70% cảnh báo · ≥100% flush (FIFO)</small></div>
+          <div class="qm-body">
+            <div class="qm-last" id="qmLast"><span class="muted">Chưa có sự kiện.</span></div>
+            <div class="qm-summary" id="qmSummary"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col col-ext">
+        <div class="col-title">External context <small>(đĩa)</small></div>
+        <div class="card store archival" id="archCard">
+          <div class="card-head"><span class="dot"></span>Archival storage</div>
+          <div class="big"><b id="archCount">0</b><span>đoạn</span></div>
+          <div class="sub-counts" id="archSub"></div>
+          <div class="store-list" id="archList"></div>
+        </div>
+        <div class="card store recall" id="recallCard">
+          <div class="card-head"><span class="dot"></span>Recall storage</div>
+          <div class="big"><b id="recallCount">0</b><span>tin nhắn</span></div>
+          <div class="sub-counts">mọi tin nhắn, kể cả đã bị evict</div>
+          <div class="store-list" id="recallList"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="chat" id="chatPanel">
+      <div class="chat-head"><b>Hội thoại</b><span>người dùng chỉ thấy <code>send_message</code></span></div>
+      <div id="chatLog" class="chat-log"></div>
+      <div id="quick" class="quick live-only"></div>
+      <form id="chatForm" class="chat-form live-only" autocomplete="off">
+        <textarea id="chatInput" rows="2" placeholder="Nhập tin nhắn… (Enter để gửi, Shift+Enter xuống dòng)"></textarea>
+        <button type="submit" class="primary">Gửi</button>
+      </form>
+    </aside>
+  </main>
+
+  <section class="timeline">
+    <div class="tl-head"><b>Timeline</b><span>bấm vào một thẻ để xem chi tiết</span></div>
+    <div id="tl" class="tl-track"></div>
+  </section>
+
+  <div id="drawer" class="drawer hidden" role="dialog" aria-label="Raw prompt">
+    <div class="drawer-head">
+      <b>Raw prompt</b><span id="drawerMeta"></span>
+      <button class="ghost icon" id="drawerClose" aria-label="Đóng">✕</button>
+    </div>
+    <div id="drawerBody" class="drawer-body"></div>
+  </div>
+
+  <div id="modal" class="modal hidden" role="dialog">
+    <div class="modal-card">
+      <div class="modal-head"><b id="modalTitle"></b><button class="ghost icon" id="modalClose" aria-label="Đóng">✕</button></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="tip" class="tip hidden" role="tooltip"></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
